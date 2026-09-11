@@ -1,26 +1,18 @@
-name: Run Pipeline and Deploy to GitHub Pages
+name: Run Pipeline and Deploy
 
 on:
   schedule:
-    - cron: "0 */6 * * *" # run every 6 hours
-  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
 
 permissions:
-  contents: write # Needed to commit the updated database back to the repo
-  pages: write # Needed to deploy to GitHub Pages
-  id-token: write # Needed for OpenID Connect authentication with Pages
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
-  pipeline-and-deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -29,37 +21,35 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # Download database state from the previous successful run
+
+      # 1. Download DB state from previous run (if present)
       - name: Download Previous DB Artifact
         uses: dawidd6/action-download-artifact@v6
         with:
           name: sqlite-db-artifact
           if_no_artifact_found: ignore
 
-      # Execute the Python pipeline to fetch, prune, and generate JSON outputs
+      # 2. Run pipeline (generates trends_data.json and updates hn_archive.db)
       - name: Run Analytics Pipeline
         run: python scripts/hn_analytics_pipeline.py
 
-      # Commit updated SQLite database back to repository
-      - name: Save Updated DB Back to Repository
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f hn_archive.db
-          git diff --quiet && git diff --staged --quiet || git commit -m "chore: update & prune sqlite database [skip ci]"
-          git push
+      # 3. Save DB as private artifact for next cron run
+      - name: Upload DB Artifact for Next Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlite-db-artifact
+          path: hn_archive.db
+          retention-days: 90
 
-      # Configure GitHub Pages environment
+      # 4. Package and publish directly to GitHub Pages
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
-      # Upload site files (HTML, JS, DB, and JSON payloads) as artifact
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: "." # Path to static web root
+          path: "."
 
-      # Deploy artifact to GitHub Pages
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
