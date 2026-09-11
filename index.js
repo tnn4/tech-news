@@ -1,4 +1,5 @@
-import { createDbWorker } from "https://esm.sh/sql.js-httpvfs@0.8.12";
+import initSqlHttpVfs from "https://esm.sh/sql.js-httpvfs@0.8.12";
+const { createDbWorker } = initSqlHttpVfs;
 
 let dbWorker = null;
 
