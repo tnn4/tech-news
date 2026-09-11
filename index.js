@@ -1,8 +1,10 @@
-import initSqlHttpVfs from "https://esm.sh/sql.js-httpvfs@0.8.12";
+console.log("index.js loading...");
+
+// import initSqlHttpVfs from "https://esm.sh/sql.js-httpvfs@0.8.12";
 import initSqlJs from "https://esm.sh/sql.js@1.12.0";
 
 let dbInstance = null;
-let activeMode = null;
+// let activeMode = null;
 
 const STOP_WORDS = new Set([
   "a",
@@ -103,21 +105,24 @@ const STOP_WORDS = new Set([
 // Universal SQL query wrapper
 async function runQuery(sql, params = []) {
   if (!dbInstance) throw new Error("Database engine not initialized.");
-
+  /*
   if (activeMode === "vfs") {
     return await dbInstance.db.query(sql, params);
   } else {
-    const stmt = dbInstance.prepare(sql);
-    stmt.bind(params);
-    const rows = [];
-    while (stmt.step()) {
-      rows.push(stmt.getAsObject());
-    }
-    stmt.free();
-    return rows;
+
   }
+ */
+  const stmt = dbInstance.prepare(sql);
+  stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return rows;
 }
 
+/*
 // Init VFS
 async function tryInitVfs() {
   const workerUrl =
@@ -146,8 +151,10 @@ async function tryInitVfs() {
     wasmUrl,
   );
 }
+*/
 
 // Init Memory
+/*
 async function tryInitMemory() {
   const SQL = await initSqlJs({
     locateFile: (file) => `https://esm.sh/sql.js@1.12.0/dist/${file}`,
@@ -157,37 +164,63 @@ async function tryInitMemory() {
   const buffer = await response.arrayBuffer();
   return new SQL.Database(new Uint8Array(buffer));
 }
+*/
+
+async function tryInitMemory() {
+  console.log("Fetching from hn_archive.db");
+  const response = await fetch("hn_archive.db");
+  if (!response.ok) throw new Error(`DB HTTP status: ${response.status}`);
+  const buffer = await response.arrayBuffer();
+
+  const SQL = await window.initSqlJs({
+    locateFile: (file) =>
+      `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`,
+  });
+
+  return new SQL.Database(new Uint8Array(buffer));
+}
 
 // Initialize and boot analytics
 async function initDatabase() {
+  console.log("starting db init...");
   const searchResultsEl = document.getElementById("search-results");
   const urlParams = new URLSearchParams(window.location.search);
   const forcedMode = urlParams.get("mode")?.toLowerCase();
 
+  /*
   if (forcedMode === "memory") {
     try {
+      console.log("Trying memory mode...");
       dbInstance = await tryInitMemory();
       activeMode = "memory";
       onDatabaseReady("In-Memory mode");
+      console.log("Memory mode success");
       return;
     } catch (err) {
       console.error("Failed to force In-Memory mode:", err);
     }
   }
+    */
 
+  /*
   try {
+    console.log("trying VFS...");
     dbInstance = await tryInitVfs();
     activeMode = "vfs";
     onDatabaseReady("HTTP Range VFS mode");
+    console.log("VFS success");
     return;
   } catch (err) {
     console.warn("HTTP VFS failed. Falling back to In-Memory:", err);
   }
+    */
 
   try {
+    console.log("Trying memory mode...");
     dbInstance = await tryInitMemory();
-    activeMode = "memory";
-    onDatabaseReady("Fallback: In-Memory mode");
+    // activeMode = "memory";
+    onDatabaseReady("Using In-Memory mode");
+    console.log("Memory mode success");
   } catch (err) {
     console.error("Critical: Database loading failed:", err);
     if (searchResultsEl)
@@ -268,10 +301,13 @@ async function generateClientSideAnalytics() {
     renderWordCloud(sortedTerms);
     renderKeywordChart(sortedTerms);
 
+    /*
     const metaEl = document.getElementById("meta-info");
     if (metaEl) {
       metaEl.textContent = `Analyzed ${rows.length} comments dynamically in browser (${activeMode.toUpperCase()} mode).`;
     }
+
+    */
   } catch (err) {
     console.error("Client analytics failure:", err);
   }
@@ -374,6 +410,7 @@ function escapeHtml(str) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  console.log("DOM ready");
   initDatabase();
   const searchBtn = document.getElementById("search-btn");
   if (searchBtn) searchBtn.addEventListener("click", searchCustomKeyword);
