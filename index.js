@@ -18,7 +18,7 @@ async function initHttpVfs() {
           config: {
             serverMode: "full",
             url: "hn_archive.db",
-            requestChunkSize: 4096, // Matches SQLite page_size in Python
+            requestChunkSize: 4096,
           },
         },
       ],
@@ -30,6 +30,9 @@ async function initHttpVfs() {
       searchResultsEl.textContent =
         "SQLite HTTP VFS ready. Enter a keyword above.";
     }
+
+    // Load top 10 recent entries directly from SQLite once initialized
+    loadTopEntries();
   } catch (err) {
     console.error("Failed to initialize sql.js-httpvfs worker:", err);
     if (searchResultsEl) {
@@ -37,6 +40,72 @@ async function initHttpVfs() {
         "Error initializing client-side database search.";
     }
   }
+}
+
+// Fetch top 10 recent entries via HTTP range queries
+async function loadTopEntries() {
+  const tbody = document.getElementById("top-entries-tbody");
+  if (!tbody || !dbWorker) return;
+
+  try {
+    const results = await dbWorker.db.query(
+      "SELECT by, story_title, text FROM comments ORDER BY created_at DESC LIMIT 10",
+    );
+
+    if (!results || results.length === 0) {
+      tbody.innerHTML =
+        "<tr><td colspan='3'>No comments found in database.</td></tr>";
+      return;
+    }
+
+    tbody.innerHTML = results
+      .map(
+        (row) => `
+        <tr>
+          <td><strong>${escapeHtml(row.by || "anonymous")}</strong></td>
+          <td>${escapeHtml(row.story_title || "N/A")}</td>
+          <td class="comment-text">${escapeHtml((row.text || "").slice(0, 140))}...</td>
+        </tr>
+      `,
+      )
+      .join("");
+  } catch (err) {
+    console.error("Failed to load top entries from DB:", err);
+    tbody.innerHTML =
+      "<tr><td colspan='3'>Error loading entries from database.</td></tr>";
+  }
+}
+
+// Render Word Cloud using Chart.js Matrix/WordCloud plugin
+function renderWordCloud(keywordData) {
+  const ctx = document.getElementById("wordCloudCanvas");
+  if (!ctx || !keywordData) return;
+
+  const words = keywordData.map((k) => ({
+    key: k.term,
+    value: k.count,
+  }));
+
+  new Chart(ctx, {
+    type: "wordCloud",
+    data: {
+      labels: words.map((w) => w.key),
+      datasets: [
+        {
+          label: "Frequency",
+          data: words.map((w) => 10 + w.value * 2), // Scale font sizes
+          color: "#ff6600",
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+      },
+    },
+  });
 }
 
 // Perform FTS search via httpvfs
@@ -49,18 +118,18 @@ async function searchCustomKeyword() {
   if (!input) return;
 
   if (!dbWorker) {
-    resultsEl.textContent =
-      "Database connection still initializing, please wait...";
+    resultsEl.textContent = "Database connection initializing...";
     return;
   }
 
   try {
     resultsEl.textContent = "Searching via range requests...";
 
-    // Query full-text search table
+    // Escaped string match for FTS5
+    const sanitizedInput = `"${input.replace(/"/g, '""')}"`;
     const result = await dbWorker.db.query(
       "SELECT COUNT(*) as cnt FROM comments_fts WHERE text MATCH ?",
-      [input],
+      [sanitizedInput],
     );
 
     const count = result[0]?.cnt || 0;
@@ -74,14 +143,14 @@ async function searchCustomKeyword() {
 // Initializations
 document.addEventListener("DOMContentLoaded", () => {
   initHttpVfs();
-  startRefreshTimer(); // Start 6-hour UTC countdown loop
+  startRefreshTimer();
 
   const searchBtn = document.getElementById("search-btn");
   if (searchBtn) {
     searchBtn.addEventListener("click", searchCustomKeyword);
   }
 
-  // Load trends dashboard analytics
+  // Load static analytics JSON payload
   fetch("trends_data.json")
     .then((res) => {
       if (!res.ok) throw new Error(`HTTP status: ${res.status}`);
@@ -89,6 +158,7 @@ document.addEventListener("DOMContentLoaded", () => {
     })
     .then((trends) => {
       renderMetadata(trends);
+      renderWordCloud(trends.keyword_distribution);
       renderKeywordChart(trends.keyword_distribution);
       renderLengthChart(trends.monthly_avg_length);
       renderAuthorsTable(trends.top_authors);
@@ -178,25 +248,20 @@ function escapeHtml(str) {
   );
 }
 
-/* Refresh timer */
 function startRefreshTimer() {
   const timerEl = document.getElementById("refresh-timer");
   if (!timerEl) return;
 
   function updateTimer() {
     const now = new Date();
-
-    // Determine current UTC metrics
     const nowUtcHours = now.getUTCHours();
     const nextIntervalHour = (Math.floor(nowUtcHours / 6) + 1) * 6;
 
-    // Construct target Date object for next UTC refresh boundary
     const target = new Date(now);
     target.setUTCHours(nextIntervalHour, 0, 0, 0);
 
     const diffMs = target - now;
 
-    // Format remaining time
     const hours = Math.floor(diffMs / (1000 * 60 * 60));
     const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
     const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
