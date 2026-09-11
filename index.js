@@ -563,8 +563,8 @@ async function searchCustomKeyword() {
     resultsEl.textContent = "Searching database...";
     const sanitizedInput = `"${input.replace(/"/g, '""')}"`;
     const result = await runQuery(
-      "SELECT COUNT(*) as cnt FROM comments WHERE text MATCH ?",
-      [sanitizedInput],
+      "SELECT COUNT(*) as cnt FROM comments WHERE LOWER(text) LIKE LOWER(?)",
+      [`%${input}%`],
     );
 
     const count = result[0]?.cnt || 0;
