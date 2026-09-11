@@ -1,54 +1,135 @@
 import initSqlHttpVfs from "https://esm.sh/sql.js-httpvfs@0.8.12";
-const { createDbWorker } = initSqlHttpVfs;
+import initSqlJs from "https://esm.sh/sql.js@1.12.0";
 
-let dbWorker = null;
+let dbInstance = null; // Holds dbWorker (VFS) or SQL.Database (In-Memory)
+let activeMode = null; // "vfs" or "memory"
 
-// Initialize WebAssembly SQLite HTTP VFS Worker
-async function initHttpVfs() {
-  const searchResultsEl = document.getElementById("search-results");
-  try {
-    const workerUrl =
-      "https://esm.sh/sql.js-httpvfs@0.8.12/dist/sqlite.worker.js";
-    const wasmUrl = "https://esm.sh/sql.js-httpvfs@0.8.12/dist/sql-wasm.wasm";
+// Unified SQL query interface to normalize result structures across backends
+async function runQuery(sql, params = []) {
+  if (!dbInstance) throw new Error("Database engine not initialized.");
 
-    dbWorker = await createDbWorker(
-      [
-        {
-          from: "inline",
-          config: {
-            serverMode: "full",
-            url: "hn_archive.db",
-            requestChunkSize: 4096,
-          },
+  if (activeMode === "vfs") {
+    // sql.js-httpvfs query method returns array of objects directly
+    return await dbInstance.db.query(sql, params);
+  } else {
+    // standard sql.js returns raw column/value matrix
+    const stmt = dbInstance.prepare(sql);
+    stmt.bind(params);
+    const rows = [];
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return rows;
+  }
+}
+
+// Attempt 1: HTTP Range Request VFS Mode
+async function tryInitVfs() {
+  const workerUrl =
+    "https://esm.sh/sql.js-httpvfs@0.8.12/dist/sqlite.worker.js";
+  const wasmUrl = "https://esm.sh/sql.js-httpvfs@0.8.12/dist/sql-wasm.wasm";
+
+  // Use Blob Proxy to bypass CORS worker instantiation security restrictions
+  const response = await fetch(workerUrl);
+  if (!response.ok) throw new Error(`Worker HTTP status: ${response.status}`);
+  const scriptText = await response.text();
+  const blobWorkerUrl = URL.createObjectURL(
+    new Blob([scriptText], { type: "application/javascript" }),
+  );
+
+  const worker = await initSqlHttpVfs.createDbWorker(
+    [
+      {
+        from: "inline",
+        config: {
+          serverMode: "full",
+          url: "hn_archive.db",
+          requestChunkSize: 4096,
         },
-      ],
-      workerUrl,
-      wasmUrl,
-    );
+      },
+    ],
+    blobWorkerUrl,
+    wasmUrl,
+  );
 
+  return worker;
+}
+
+// Attempt 2: Standard In-Memory sql.js Mode
+async function tryInitMemory() {
+  const SQL = await initSqlJs({
+    locateFile: (file) => `https://esm.sh/sql.js@1.12.0/dist/${file}`,
+  });
+
+  const response = await fetch("hn_archive.db");
+  if (!response.ok) throw new Error(`DB HTTP status: ${response.status}`);
+  const buffer = await response.arrayBuffer();
+
+  return new SQL.Database(new Uint8Array(buffer));
+}
+
+// Orchestrate initialization with URL parameter toggle and automatic fallback
+async function initDatabase() {
+  const searchResultsEl = document.getElementById("search-results");
+  const urlParams = new URLSearchParams(window.location.search);
+  const forcedMode = urlParams.get("mode")?.toLowerCase();
+
+  // Mode 1: Explicit Memory request via ?mode=memory
+  if (forcedMode === "memory") {
+    try {
+      dbInstance = await tryInitMemory();
+      activeMode = "memory";
+      if (searchResultsEl) {
+        searchResultsEl.textContent = "Database ready (In-Memory mode).";
+      }
+      loadTopEntries();
+      return;
+    } catch (err) {
+      console.error("Failed to force load In-Memory SQLite:", err);
+    }
+  }
+
+  // Mode 2: Attempt VFS (or default flow)
+  try {
+    dbInstance = await tryInitVfs();
+    activeMode = "vfs";
+    if (searchResultsEl) {
+      searchResultsEl.textContent = "Database ready (HTTP Range VFS mode).";
+    }
+    loadTopEntries();
+    return;
+  } catch (err) {
+    console.warn(
+      "HTTP VFS mode failed. Executing fallback to In-Memory mode:",
+      err,
+    );
+  }
+
+  // Mode 3: Fallback execution if VFS fails
+  try {
+    dbInstance = await tryInitMemory();
+    activeMode = "memory";
     if (searchResultsEl) {
       searchResultsEl.textContent =
-        "SQLite HTTP VFS ready. Enter a keyword above.";
+        "Database ready (Fallback: In-Memory mode).";
     }
-
-    // Load top 10 recent entries directly from SQLite once initialized
     loadTopEntries();
   } catch (err) {
-    console.error("Failed to initialize sql.js-httpvfs worker:", err);
+    console.error("Critical: Both SQLite backends failed to load:", err);
     if (searchResultsEl) {
-      searchResultsEl.textContent =
-        "Error initializing client-side database search.";
+      searchResultsEl.textContent = "Error initializing database search.";
     }
   }
 }
 
-// Fetch top 10 recent entries via HTTP range queries
+// Fetch top 10 recent entries via active backend
 async function loadTopEntries() {
   const tbody = document.getElementById("top-entries-tbody");
-  if (!tbody || !dbWorker) return;
+  if (!tbody || !dbInstance) return;
 
   try {
-    const results = await dbWorker.db.query(
+    const results = await runQuery(
       "SELECT by, story_title, text FROM comments ORDER BY created_at DESC LIMIT 10",
     );
 
@@ -76,6 +157,37 @@ async function loadTopEntries() {
   }
 }
 
+// Perform FTS search via unified query handler
+async function searchCustomKeyword() {
+  const inputEl = document.getElementById("custom-search-input");
+  const resultsEl = document.getElementById("search-results");
+
+  if (!inputEl || !resultsEl) return;
+  const input = inputEl.value.trim();
+  if (!input) return;
+
+  if (!dbInstance) {
+    resultsEl.textContent = "Database connection initializing...";
+    return;
+  }
+
+  try {
+    resultsEl.textContent = "Searching database...";
+
+    const sanitizedInput = `"${input.replace(/"/g, '""')}"`;
+    const result = await runQuery(
+      "SELECT COUNT(*) as cnt FROM comments_fts WHERE text MATCH ?",
+      [sanitizedInput],
+    );
+
+    const count = result[0]?.cnt || 0;
+    resultsEl.textContent = `Term "${input}" matches ${count} comment(s) in the database [${activeMode.toUpperCase()} mode].`;
+  } catch (err) {
+    console.error("Query failed:", err);
+    resultsEl.textContent = `Query error: ${err.message || "Invalid search syntax"}`;
+  }
+}
+
 // Render Word Cloud using Chart.js Matrix/WordCloud plugin
 function renderWordCloud(keywordData) {
   const ctx = document.getElementById("wordCloudCanvas");
@@ -93,7 +205,7 @@ function renderWordCloud(keywordData) {
       datasets: [
         {
           label: "Frequency",
-          data: words.map((w) => 10 + w.value * 2), // Scale font sizes
+          data: words.map((w) => 10 + w.value * 2),
           color: "#ff6600",
         },
       ],
@@ -108,41 +220,9 @@ function renderWordCloud(keywordData) {
   });
 }
 
-// Perform FTS search via httpvfs
-async function searchCustomKeyword() {
-  const inputEl = document.getElementById("custom-search-input");
-  const resultsEl = document.getElementById("search-results");
-
-  if (!inputEl || !resultsEl) return;
-  const input = inputEl.value.trim();
-  if (!input) return;
-
-  if (!dbWorker) {
-    resultsEl.textContent = "Database connection initializing...";
-    return;
-  }
-
-  try {
-    resultsEl.textContent = "Searching via range requests...";
-
-    // Escaped string match for FTS5
-    const sanitizedInput = `"${input.replace(/"/g, '""')}"`;
-    const result = await dbWorker.db.query(
-      "SELECT COUNT(*) as cnt FROM comments_fts WHERE text MATCH ?",
-      [sanitizedInput],
-    );
-
-    const count = result[0]?.cnt || 0;
-    resultsEl.textContent = `Term "${input}" matches ${count} comment(s) in the database.`;
-  } catch (err) {
-    console.error("Query failed:", err);
-    resultsEl.textContent = `Query error: ${err.message || "Invalid search syntax"}`;
-  }
-}
-
 // Initializations
 document.addEventListener("DOMContentLoaded", () => {
-  initHttpVfs();
+  initDatabase();
   startRefreshTimer();
 
   const searchBtn = document.getElementById("search-btn");
@@ -150,7 +230,6 @@ document.addEventListener("DOMContentLoaded", () => {
     searchBtn.addEventListener("click", searchCustomKeyword);
   }
 
-  // Load static analytics JSON payload
   fetch("trends_data.json")
     .then((res) => {
       if (!res.ok) throw new Error(`HTTP status: ${res.status}`);
