@@ -172,7 +172,7 @@ async function tryInitMemory() {
   if (!response.ok) throw new Error(`DB HTTP status: ${response.status}`);
   const buffer = await response.arrayBuffer();
 
-  const SQL = await window.initSqlJs({
+  const SQL = await initSqlJs({
     locateFile: (file) =>
       `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`,
   });
