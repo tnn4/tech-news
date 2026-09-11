@@ -29,12 +29,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # Download database state from the previous successful run
+      - name: Download Previous DB Artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: sqlite-db-artifact
+          if_no_artifact_found: ignore
 
-      # 1. Execute the Python pipeline to fetch, prune, and generate JSON outputs
+      # Execute the Python pipeline to fetch, prune, and generate JSON outputs
       - name: Run Analytics Pipeline
         run: python scripts/hn_analytics_pipeline.py
 
-      # 2. Commit updated SQLite database back to repository
+      # Commit updated SQLite database back to repository
       - name: Save Updated DB Back to Repository
         run: |
           git config --global user.name "github-actions[bot]"
@@ -43,17 +49,17 @@ jobs:
           git diff --quiet && git diff --staged --quiet || git commit -m "chore: update & prune sqlite database [skip ci]"
           git push
 
-      # 3. Configure GitHub Pages environment
+      # Configure GitHub Pages environment
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
-      # 4. Upload site files (HTML, JS, DB, and JSON payloads) as artifact
+      # Upload site files (HTML, JS, DB, and JSON payloads) as artifact
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: "." # Path to static web root
 
-      # 5. Deploy artifact to GitHub Pages
+      # Deploy artifact to GitHub Pages
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
