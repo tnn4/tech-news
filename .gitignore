@@ -1,0 +1,4 @@
+# ignore all db files in any file
+*.db
+archive
+tree.txt

@@ -1,0 +1,59 @@
+name: Run Pipeline and Deploy to GitHub Pages
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # run every 6 hours
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+permissions:
+  contents: write # Needed to commit the updated database back to the repo
+  pages: write # Needed to deploy to GitHub Pages
+  id-token: write # Needed for OpenID Connect authentication with Pages
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  pipeline-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 1. Execute the Python pipeline to fetch, prune, and generate JSON outputs
+      - name: Run Analytics Pipeline
+        run: python scripts/hn_analytics_pipeline.py
+
+      # 2. Commit updated SQLite database back to repository
+      - name: Save Updated DB Back to Repository
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add hn_archive.db
+          git diff --quiet && git diff --staged --quiet || git commit -m "chore: update & prune sqlite database [skip ci]"
+          git push
+
+      # 3. Configure GitHub Pages environment
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      # 4. Upload site files (HTML, JS, DB, and JSON payloads) as artifact
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "." # Path to static web root
+
+      # 5. Deploy artifact to GitHub Pages
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
